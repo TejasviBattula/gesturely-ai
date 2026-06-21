@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Gesturely - Ultra Vision</title>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils"></script>
+  <style>
+    :root { --neon: #00ffcc; --dark: #020617; }
+    body { font-family: 'Inter', sans-serif; background: var(--dark); color: white; margin: 0; display: flex; height: 100vh; }
+    .vision-side { flex: 2; display: flex; flex-direction: column; align-items: center; justify-content: center; position: relative; }
+    #video-wrapper { position: relative; border: 4px solid #1e293b; border-radius: 20px; overflow: hidden; box-shadow: 0 0 40px rgba(0, 255, 204, 0.15); }
+    canvas { transform: scaleX(-1); display: block; }
+    .ui-overlay { margin-top: 20px; background: #0f172a; padding: 15px 50px; border-radius: 50px; border: 2px solid var(--neon); }
+    #gesture-text { font-size: 3rem; font-weight: 900; color: var(--neon); text-transform: uppercase; }
+    .log-side { flex: 1; background: #0a0f1d; padding: 25px; border-left: 1px solid #1e293b; display: flex; flex-direction: column; }
+    #chat-log { flex-grow: 1; overflow-y: auto; color: #64748b; font-family: monospace; }
+    .entry { border-bottom: 1px solid #1e293b; padding: 8px 0; }
+  </style>
+</head>
+<body>
+
+  <div class="vision-side">
+    <div id="video-wrapper">
+      <video id="input_video" style="display:none"></video>
+      <canvas id="output_canvas" width="800" height="600"></canvas>
+    </div>
+    <div class="ui-overlay"><div id="gesture-text">Waiting...</div></div>
+  </div>
+
+  <div class="log-side">
+    <h2>Gesture Log</h2>
+    <div id="chat-log"></div>
+    <button onclick="window.speechSynthesis.cancel()" style="margin-top:10px; padding:10px; cursor:pointer;">Stop Speech</button>
+  </div>
+
+  <script type="module">
+    const videoElement = document.getElementById('input_video');
+    const canvasElement = document.getElementById('output_canvas');
+    const canvasCtx = canvasElement.getContext('2d');
+    const gestureDisplay = document.getElementById('gesture-text');
+    const chatLog = document.getElementById('chat-log');
+
+    let lastFinalGesture = "";
+    let stableBuffer = "";
+    let bufferCount = 0;
+    const REQUIRED_STABILITY = 22; // Higher = slower but more accurate
+
+    function speak(text) {
+      if (text === lastFinalGesture || text === "...") return;
+      window.speechSynthesis.cancel(); // Stop current speech before new one
+      const utterance = new SpeechSynthesisUtterance(text);
+      window.speechSynthesis.speak(utterance);
+      
+      const p = document.createElement('div');
+      p.className = 'entry';
+      p.innerHTML = `<span style="color:var(--neon)">[${new Date().toLocaleTimeString()}]</span> ${text}`;
+      chatLog.prepend(p);
+      lastFinalGesture = text;
+    }
+
+    function onResults(results) {
+      canvasCtx.save();
+      canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+      canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+      
+      let frameGesture = "...";
+      let fingersUpCount = 0;
+
+      if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+        results.multiHandLandmarks.forEach((lm) => {
+          drawConnectors(canvasCtx, lm, HAND_CONNECTIONS, {color: '#00ffcc', lineWidth: 4});
+          drawLandmarks(canvasCtx, lm, {color: '#ffffff', lineWidth: 1, radius: 2});
+
+          // Logic for finger states
+          const thumb = lm[4].y < lm[3].y && Math.abs(lm[4].x - lm[2].x) > 0.05;
+          const index = lm[8].y < lm[6].y;
+          const middle = lm[12].y < lm[10].y;
+          const ring = lm[16].y < lm[14].y;
+          const pinky = lm[20].y < lm[18].y;
+          const up = [thumb, index, middle, ring, pinky].filter(v => v).length;
+          fingersUpCount += up;
+
+          // SPECIAL GESTURE DETECTION
+          const indexMiddleDist = Math.hypot(lm[8].x - lm[12].x, lm[8].y - lm[12].y);
+          const thumbIndexDist = Math.hypot(lm[4].x - lm[8].x, lm[4].y - lm[8].y);
+
+          if (up === 5) frameGesture = "Hi / Bye /5";
+          else if (thumb && !index && !middle && !ring && !pinky) frameGesture = "Thumbs Up! ";
+          else if (index && middle && !ring && !pinky && !thumb) frameGesture = "Peace / Victory/2";
+          else if (thumb && index && pinky && !middle && !ring) frameGesture = "I Love You ";
+          else if (thumb && pinky && !index && !middle && !ring) frameGesture = "Super / Shaka ";
+          else if (thumb && index && !middle && !ring && !pinky) frameGesture = "Swag / Pistol ";
+          else if (pinky && !index && !middle && !ring && !thumb) frameGesture = "Promise ";
+          else if (thumbIndexDist < 0.05 && middle && ring && pinky) frameGesture = "OK ";
+          else if (up === 1 && index && !thumb) frameGesture = "Thank You/1";
+          else if (up === 0) frameGesture = "Zero";
+          else frameGesture = `Number: ${fingersUpCount}`;
+        });
+
+        // STABILITY ENGINE
+        if (frameGesture === stableBuffer) {
+          bufferCount++;
+        } else {
+          stableBuffer = frameGesture;
+          bufferCount = 0;
+        }
+
+        if (bufferCount >= REQUIRED_STABILITY) {
+          gestureDisplay.innerText = stableBuffer;
+          speak(stableBuffer);
+        }
+      } else {
+        gestureDisplay.innerText = "Show Hand";
+        bufferCount = 0;
+      }
+      canvasCtx.restore();
+    }
+
+    const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+    hands.setOptions({ maxNumHands: 2, modelComplexity: 1, minDetectionConfidence: 0.8 });
+    hands.onResults(onResults);
+    new Camera(videoElement, {onFrame: async () => await hands.send({image: videoElement}), width: 800, height: 600}).start();
+  </script>
+</body>
+</html>
